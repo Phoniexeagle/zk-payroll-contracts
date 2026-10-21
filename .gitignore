@@ -29,8 +29,6 @@ witness.wtns
 circuits/build/
 
 # Environment / secrets
-.env
-.env.*
 .opencode
 
 # Editor and IDE files
@@ -43,6 +41,7 @@ circuits/build/
 node_modules/
 npm-debug.log*
 yarn-debug.log*
+temp_auto_push.bat
 yarn-error.log*
 
 # OS files
@@ -88,3 +87,6 @@ tarpaulin-report.html
 # Temporary editor swap files
 .#*
 \#*#
+.gitignore
+branch_structure.json
+config.bat
