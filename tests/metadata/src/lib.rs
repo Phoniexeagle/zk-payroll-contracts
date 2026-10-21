@@ -370,3 +370,200 @@ fn test_metadata_validation_preserves_privacy() {
     assert_eq!(run.employee_count, 1);
     assert_eq!(run.total_amount, 50_000i128);
 }
+
+// ── 6. Metadata Digest Consistency Tests ─────────────────────────────────
+
+#[test]
+fn test_commit_metadata_hash_returns_consistent_digest() {
+    let env = Env::default();
+    let (payroll, _, _, _, admin, _, _) = setup_system(&env);
+
+    let meta_hash = valid_hash(&env, 0xab);
+    let returned = payroll.commit_metadata_hash(&admin, &meta_hash);
+    assert_eq!(returned, meta_hash);
+}
+
+#[test]
+fn test_set_run_metadata_matches_committed_digest() {
+    let env = Env::default();
+    let (payroll, _, _, _, admin, _, employee) = setup_system(&env);
+
+    let meta_hash = valid_hash(&env, 0xcd);
+    payroll.commit_metadata_hash(&admin, &meta_hash);
+
+    let proof = BytesN::from_array(&env, &[1u8; 256]);
+    let mut proofs = Vec::new(&env);
+    proofs.push_back(proof);
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(1000i128);
+    let mut employees = Vec::new(&env);
+    employees.push_back(employee);
+
+    let run_id = payroll.prepare_payroll_run(
+        &proofs,
+        &amounts,
+        &employees,
+        &1000i128,
+        &valid_hash(&env, 0x11),
+        &None,
+    );
+
+    payroll.set_run_metadata(&admin, &run_id, &meta_hash);
+    assert_eq!(payroll.get_metadata_hash(&run_id), meta_hash);
+}
+
+#[test]
+fn test_metadata_digest_consistent_across_creation_and_update() {
+    let env = Env::default();
+    let (payroll, _, _, _, admin, _, employee) = setup_system(&env);
+
+    let meta_hash = valid_hash(&env, 0x42);
+    payroll.commit_metadata_hash(&admin, &meta_hash);
+
+    let proof = BytesN::from_array(&env, &[1u8; 256]);
+    let mut proofs = Vec::new(&env);
+    proofs.push_back(proof);
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(2000i128);
+    let mut employees = Vec::new(&env);
+    employees.push_back(employee);
+
+    let run_id = payroll.prepare_payroll_run(
+        &proofs,
+        &amounts,
+        &employees,
+        &2000i128,
+        &valid_hash(&env, 0x22),
+        &None,
+    );
+    payroll.set_run_metadata(&admin, &run_id, &meta_hash);
+
+    // Re-committing the same digest must remain consistent.
+    let recommitted = payroll.commit_metadata_hash(&admin, &meta_hash);
+    assert_eq!(recommitted, meta_hash);
+    assert_eq!(payroll.get_metadata_hash(&run_id), meta_hash);
+}
+
+#[test]
+fn test_set_run_metadata_mismatched_digest_fails_predictably() {
+    let env = Env::default();
+    let (payroll, _, _, _, admin, _, employee) = setup_system(&env);
+
+    let committed = valid_hash(&env, 0x33);
+    payroll.commit_metadata_hash(&admin, &committed);
+
+    let proof = BytesN::from_array(&env, &[1u8; 256]);
+    let mut proofs = Vec::new(&env);
+    proofs.push_back(proof);
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(1000i128);
+    let mut employees = Vec::new(&env);
+    employees.push_back(employee);
+
+    let run_id = payroll.prepare_payroll_run(
+        &proofs,
+        &amounts,
+        &employees,
+        &1000i128,
+        &valid_hash(&env, 0x44),
+        &None,
+    );
+
+    let mismatched = valid_hash(&env, 0x99);
+    let result = payroll.try_set_run_metadata(&admin, &run_id, &mismatched);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_audit_verify_payroll_metadata_matching_digest_succeeds() {
+    let env = Env::default();
+    let (_, _, _, audit, _admin, _, _) = setup_system(&env);
+
+    let auditor = Address::generate(&env);
+    let expiration = env.ledger().sequence() + 1_000;
+    let _key_bytes = audit.generate_view_key(&auditor, &expiration);
+
+    let digest = valid_hash(&env, 0x55);
+    let result = audit.try_verify_payroll_metadata(
+        &auditor,
+        &digest,
+        &digest,
+        &AuditScope::FullCompany,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_audit_verify_payroll_metadata_mismatched_digest_fails() {
+    let env = Env::default();
+    let (_, _, _, audit, _admin, _, _) = setup_system(&env);
+
+    let auditor = Address::generate(&env);
+    let expiration = env.ledger().sequence() + 1_000;
+    let _key_bytes = audit.generate_view_key(&auditor, &expiration);
+
+    let expected = valid_hash(&env, 0x55);
+    let actual = valid_hash(&env, 0x66);
+    let result = audit.try_verify_payroll_metadata(
+        &auditor,
+        &expected,
+        &actual,
+        &AuditScope::FullCompany,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_metadata_digest_consistent_through_settlement() {
+    let env = Env::default();
+    let (payroll, _, commitment, _, admin, _, employee) = setup_system(&env);
+    commitment.store_commitment(&employee, &valid_hash(&env, 0x99));
+
+    let meta_hash = valid_hash(&env, 0x77);
+    payroll.commit_metadata_hash(&admin, &meta_hash);
+
+    let proof = BytesN::from_array(&env, &[1u8; 256]);
+    let mut proofs = Vec::new(&env);
+    proofs.push_back(proof);
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(3000i128);
+    let mut employees = Vec::new(&env);
+    employees.push_back(employee);
+
+    let nonce = valid_hash(&env, 0x88);
+    let run_id =
+        payroll.batch_process_payroll(&proofs, &amounts, &employees, &3000i128, &nonce, &None);
+    payroll.set_run_metadata(&admin, &run_id, &meta_hash);
+
+    let run = payroll.get_payroll_run(&run_id);
+    assert_eq!(run.metadata_hash, meta_hash);
+    assert_eq!(payroll.get_metadata_hash(&run_id), meta_hash);
+}
+
+#[test]
+fn test_metadata_digest_mismatch_after_settlement_detected() {
+    let env = Env::default();
+    let (payroll, _, commitment, _, admin, _, employee) = setup_system(&env);
+    commitment.store_commitment(&employee, &valid_hash(&env, 0x99));
+
+    let meta_hash = valid_hash(&env, 0x77);
+    payroll.commit_metadata_hash(&admin, &meta_hash);
+
+    let proof = BytesN::from_array(&env, &[1u8; 256]);
+    let mut proofs = Vec::new(&env);
+    proofs.push_back(proof);
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(3000i128);
+    let mut employees = Vec::new(&env);
+    employees.push_back(employee);
+
+    let nonce = valid_hash(&env, 0x88);
+    let run_id =
+        payroll.batch_process_payroll(&proofs, &amounts, &employees, &3000i128, &nonce, &None);
+    payroll.set_run_metadata(&admin, &run_id, &meta_hash);
+
+    let tampered = valid_hash(&env, 0xaa);
+    let result = payroll.try_set_run_metadata(&admin, &run_id, &tampered);
+    assert!(result.is_err());
+    assert_eq!(payroll.get_metadata_hash(&run_id), meta_hash);
+}
